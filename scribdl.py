@@ -4,11 +4,13 @@ from bs4 import BeautifulSoup
 import img2pdf
 import os
 from PIL import Image
+from playwright.sync_api import sync_playwright
 import requests
 import shutil
 import sys
 import argparse
 import re
+import time
 
 IMAGES = []
 SESSION = requests.Session()
@@ -181,6 +183,61 @@ def convert_to_pdf(title):
     pdf_path = os.path.join(PDF_DIR, f"{title}.pdf")
     with open(pdf_path, "wb") as f:
         f.write(img2pdf.convert(sorted_images))
+    print(f"Saved PDF: {pdf_path}")
+
+
+def screenshot_pages(url, title):
+    """Use Playwright to screenshot each page with text and images rendered."""
+    global IMAGES
+    ensure_dirs()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(
+            viewport={"width": 1200, "height": 900},
+            device_scale_factor=2,
+        )
+        print("Loading document in browser...")
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        time.sleep(3)
+
+        # Scroll through to load all pages
+        outer_pages = page.query_selector_all(".outer_page")
+        total = len(outer_pages)
+        print(f"Found {total} pages, scrolling to load all...")
+
+        for i in range(total * 2):
+            page.evaluate("window.scrollBy(0, 800)")
+            time.sleep(0.3)
+
+        # Wait for images to finish loading
+        time.sleep(2)
+
+        # Screenshot each page
+        newpages = page.query_selector_all(".newpage")
+        print(f"Screenshotting {len(newpages)} pages...")
+
+        for i, pg in enumerate(newpages, 1):
+            image_path = os.path.join(IMAGES_DIR, f"{i}.jpg")
+            png_path = os.path.join(IMAGES_DIR, f"{i}.png")
+
+            # Scroll element into view to ensure it's rendered
+            pg.scroll_into_view_if_needed()
+            time.sleep(0.3)
+
+            pg.screenshot(path=png_path)
+
+            # Convert PNG to JPEG for img2pdf compatibility
+            with Image.open(png_path) as img:
+                img.convert("RGB").save(image_path, "JPEG", quality=95)
+            os.remove(png_path)
+
+            IMAGES.append(image_path)
+            print(f"Captured page {i}/{len(newpages)}")
+
+        browser.close()
+
+    convert_to_pdf(title)
 
 
 def get_scribd_document(url, images=False):
@@ -190,15 +247,14 @@ def get_scribd_document(url, images=False):
     TOTAL_PAGES = get_total_pages(url)
     soup = BeautifulSoup(response, "html.parser")
 
-    title = sanitize_title(soup.find("title").get_text())
+    # Use the URL slug as the file name
+    title = sanitize_title(url.rstrip("/").split("/")[-1])
+
+    if images:
+        screenshot_pages(url, title)
+        return
 
     page_num = 1
-    if images:
-        absimg = soup.find_all("img", {"class": "absimg"}, src=True)
-        for img in absimg:
-            save_image(img["src"], page_num)
-            page_num += 1
-
     js_text = soup.find_all("script", type="text/javascript")
     for opening in js_text:
         script_content = opening.string
@@ -206,10 +262,7 @@ def get_scribd_document(url, images=False):
             continue
         matches = re.findall(r"https://.*?\.jsonp", script_content)
         for jsonp in matches:
-            page_num = save_content(jsonp, images, page_num, title)
-
-    if images:
-        convert_to_pdf(title)
+            page_num = save_content(jsonp, False, page_num, title)
 
 
 def command_line():

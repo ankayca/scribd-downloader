@@ -1,3 +1,5 @@
 BeautifulSoup4
 requests
 img2pdf
+Pillow
+playwright
