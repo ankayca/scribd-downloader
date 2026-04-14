@@ -3,6 +3,7 @@
 from bs4 import BeautifulSoup
 import img2pdf
 import os
+from PIL import Image
 import requests
 import shutil
 import sys
@@ -10,6 +11,7 @@ import argparse
 import re
 
 IMAGES = []
+SESSION = requests.Session()
 
 IMAGES_DIR = "scribd/images"
 PDF_DIR = "scribd"
@@ -35,6 +37,13 @@ def get_arguments():
         action="store_true",
         default=False,
     )
+    parser.add_argument(
+        "-c",
+        "--cookie",
+        help="Browser cookie string for authenticated access",
+        type=str,
+        default=None,
+    )
 
     return parser.parse_args()
 
@@ -46,13 +55,43 @@ def fix_encoding(query):
         return query.encode("utf-8")
 
 
+def setup_session(cookie=None):
+    """Configure the shared session with browser headers and optional cookies."""
+    SESSION.headers.update({
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.scribd.com/",
+    })
+    if cookie:
+        SESSION.headers["Cookie"] = cookie
+
+
 def get_total_pages(url):
-    response = requests.get(url).text
+    response = SESSION.get(url).text
     soup = BeautifulSoup(response, "html.parser")
     span = soup.find("span", {"data-e2e": "total-pages"})
     if span:
         total_pages = span.get_text().replace("/", "").strip()
         return int(total_pages)
+    return None
+
+
+def extract_image_url_from_jsonp(jsonp_url):
+    """Fetch a jsonp file and extract the absimg src URL from it."""
+    response = SESSION.get(jsonp_url).text
+    # Strip the jsonp callback wrapper: window.pageN_callback(["..."])
+    match = re.search(r'_callback\(\["(.*)"\]\)', response, re.DOTALL)
+    if not match:
+        return None
+    html_content = match.group(1).replace("\\n", "\n").replace('\\"', '"').replace("\\/", "/")
+    soup = BeautifulSoup(html_content, "html.parser")
+    # Images use "orig" attribute in jsonp, not "src"
+    img = soup.find("img", {"class": "absimg"})
+    if img:
+        url = img.get("orig") or img.get("src")
+        if url:
+            # Convert http to https
+            return url.replace("http://html.scribd.com", "https://html.scribdassets.com")
     return None
 
 
@@ -69,25 +108,35 @@ def save_image(content, page_num, found=False):
         os.remove(image_path)
 
     if content.endswith(".jsonp"):
-        replacement = content.replace("/pages/", "/images/")
-        if found:
-            replacement = replacement.replace(".jsonp", "/000.jpg")
-        else:
-            replacement = replacement.replace(".jsonp", ".jpg")
+        # Parse jsonp to find the real image URL from the absimg tag
+        replacement = extract_image_url_from_jsonp(content)
+        if not replacement:
+            # Fallback to old URL transformation
+            replacement = content.replace("/pages/", "/images/")
+            if found:
+                replacement = replacement.replace(".jsonp", "/000.jpg")
+            else:
+                replacement = replacement.replace(".jsonp", ".jpg")
     else:
         replacement = content
 
-    response = requests.get(replacement, stream=True)
+    response = SESSION.get(replacement, stream=True)
     with open(image_path, "wb") as out_file:
         shutil.copyfileobj(response.raw, out_file)
 
-    IMAGES.append(image_path)
-    print(f"Downloaded image {page_num}/{TOTAL_PAGES}")
+    try:
+        with Image.open(image_path) as img:
+            img.verify()
+        IMAGES.append(image_path)
+        print(f"Downloaded image {page_num}/{TOTAL_PAGES}")
+    except Exception:
+        os.remove(image_path)
+        print(f"Skipped image {page_num}/{TOTAL_PAGES} (invalid/access denied)")
 
 
 def save_text(jsonp, filename):
     """Extract text from .jsonp and append to a text file."""
-    response = requests.get(jsonp).text
+    response = SESSION.get(jsonp).text
     page_no = response[11:12]
     response_head = (
         response.replace(f'window.page{page_no}_callback(["', "")
@@ -136,7 +185,7 @@ def convert_to_pdf(title):
 
 def get_scribd_document(url, images=False):
     """Download Scribd document as images or text and convert images to PDF."""
-    response = requests.get(url).text
+    response = SESSION.get(url).text
     global TOTAL_PAGES
     TOTAL_PAGES = get_total_pages(url)
     soup = BeautifulSoup(response, "html.parser")
@@ -165,6 +214,7 @@ def get_scribd_document(url, images=False):
 
 def command_line():
     args = get_arguments()
+    setup_session(args.cookie)
     get_scribd_document(args.url, images=args.images)
 
 
