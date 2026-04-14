@@ -7,6 +7,12 @@ Just a personal solution that I cleaned up a bit and put here for reference.
 - Download documents as images or text.
 - Automatically turns downloaded images into a PDF.
 
+## Install requirements and browser drivers
+
+```bash
+pip install -r requirements.txt
+playwright install chromium
+```
 ## Usage
 
 ```bash
