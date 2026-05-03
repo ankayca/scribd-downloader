@@ -47,6 +47,19 @@ def get_arguments():
         default=None,
     )
 
+    parser.add_argument(
+        "--from-page",
+        help="Start screenshotting from this page number (inclusive)",
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "--to-page",
+        help="Stop screenshotting at this page number (inclusive)",
+        type=int,
+        default=None,
+    )
+
     return parser.parse_args()
 
 
@@ -186,7 +199,7 @@ def convert_to_pdf(title):
     print(f"Saved PDF: {pdf_path}")
 
 
-def screenshot_pages(url, title):
+def screenshot_pages(url, title, from_page=None, to_page=None):
     """Use Playwright to screenshot each page with text and images rendered."""
     global IMAGES
     ensure_dirs()
@@ -213,11 +226,40 @@ def screenshot_pages(url, title):
         # Wait for images to finish loading
         time.sleep(2)
 
+        # Inject a persistent stylesheet to permanently hide all fixed/sticky UI overlays.
+        # This survives React re-renders that would undo a one-shot JS evaluate().
+        page.add_style_tag(content="""
+            *:not(.newpage):not(.outer_page):not(.newpage *) {
+                position: static !important;
+            }
+            [class*='header'], [class*='toolbar'], [class*='download'],
+            [class*='nav'], [id*='header'], [id*='toolbar'],
+            [class*='ad'], [id*='ad'], [class*='banner'] {
+                display: none !important;
+            }
+        """)
+        # Also do a one-shot sweep for anything still fixed/sticky
+        page.evaluate("""
+            () => {
+                document.querySelectorAll('*').forEach(el => {
+                    const s = window.getComputedStyle(el);
+                    if (s.position === 'fixed' || s.position === 'sticky') {
+                        el.style.setProperty('display', 'none', 'important');
+                    }
+                });
+            }
+        """)
+
         # Screenshot each page
         newpages = page.query_selector_all(".newpage")
         print(f"Screenshotting {len(newpages)} pages...")
 
         for i, pg in enumerate(newpages, 1):
+            if from_page and i < from_page:
+                continue
+            if to_page and i > to_page:
+                break
+
             image_path = os.path.join(IMAGES_DIR, f"{i}.jpg")
             png_path = os.path.join(IMAGES_DIR, f"{i}.png")
 
@@ -240,7 +282,7 @@ def screenshot_pages(url, title):
     convert_to_pdf(title)
 
 
-def get_scribd_document(url, images=False):
+def get_scribd_document(url, images=False, args=None):
     """Download Scribd document as images or text and convert images to PDF."""
     response = SESSION.get(url).text
     global TOTAL_PAGES
@@ -251,7 +293,7 @@ def get_scribd_document(url, images=False):
     title = sanitize_title(url.rstrip("/").split("/")[-1])
 
     if images:
-        screenshot_pages(url, title)
+        screenshot_pages(url, title, from_page=args.from_page, to_page=args.to_page)
         return
 
     page_num = 1
@@ -268,7 +310,7 @@ def get_scribd_document(url, images=False):
 def command_line():
     args = get_arguments()
     setup_session(args.cookie)
-    get_scribd_document(args.url, images=args.images)
+    get_scribd_document(args.url, images=args.images, args=args)
 
 
 if __name__ == "__main__":
