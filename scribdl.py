@@ -207,7 +207,7 @@ def screenshot_pages(url, title, from_page=None, to_page=None):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(
-            viewport={"width": 1200, "height": 900},
+            viewport={"width": 1920, "height": 1080},
             device_scale_factor=2,
         )
         print("Loading document in browser...")
@@ -226,25 +226,20 @@ def screenshot_pages(url, title, from_page=None, to_page=None):
         # Wait for images to finish loading
         time.sleep(2)
 
-        # Inject a persistent stylesheet to permanently hide all fixed/sticky UI overlays.
-        # This survives React re-renders that would undo a one-shot JS evaluate().
+        # Hide fixed/sticky UI overlays (navbar, toolbar, ads) so they don't
+        # visually bleed into element screenshots.
         page.add_style_tag(content="""
-            *:not(.newpage):not(.outer_page):not(.newpage *) {
-                position: static !important;
-            }
-            [class*='header'], [class*='toolbar'], [class*='download'],
-            [class*='nav'], [id*='header'], [id*='toolbar'],
-            [class*='ad'], [id*='ad'], [class*='banner'] {
-                display: none !important;
+            *[style*='position: fixed'], *[style*='position:fixed'],
+            *[style*='position: sticky'], *[style*='position:sticky'] {
+                visibility: hidden !important;
             }
         """)
-        # Also do a one-shot sweep for anything still fixed/sticky
         page.evaluate("""
             () => {
                 document.querySelectorAll('*').forEach(el => {
-                    const s = window.getComputedStyle(el);
-                    if (s.position === 'fixed' || s.position === 'sticky') {
-                        el.style.setProperty('display', 'none', 'important');
+                    const pos = window.getComputedStyle(el).position;
+                    if (pos === 'fixed' || pos === 'sticky') {
+                        el.style.visibility = 'hidden';
                     }
                 });
             }
@@ -263,11 +258,24 @@ def screenshot_pages(url, title, from_page=None, to_page=None):
             image_path = os.path.join(IMAGES_DIR, f"{i}.jpg")
             png_path = os.path.join(IMAGES_DIR, f"{i}.png")
 
-            # Scroll element into view to ensure it's rendered
-            pg.scroll_into_view_if_needed()
+            try:
+                # Use a short timeout — some .newpage elements are hidden placeholders
+                pg.scroll_into_view_if_needed(timeout=5000)
+            except Exception:
+                print(f"Skipped page {i}/{len(newpages)} (not visible)")
+                continue
             time.sleep(0.3)
 
-            pg.screenshot(path=png_path)
+            try:
+                # Use pg.screenshot() directly — it captures the exact element bounding
+                # box correctly accounting for CSS transforms, without the
+                # viewport-relative coordinate mismatch that page.screenshot(clip=bbox)
+                # suffers from (bounding_box() returns viewport-relative y, but
+                # page.screenshot clip expects page-absolute y, causing height clipping).
+                pg.screenshot(path=png_path)
+            except Exception as e:
+                print(f"Skipped page {i}/{len(newpages)} (screenshot failed: {e})")
+                continue
 
             # Convert PNG to JPEG for img2pdf compatibility
             with Image.open(png_path) as img:
