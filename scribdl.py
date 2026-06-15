@@ -226,24 +226,29 @@ def screenshot_pages(url, title, from_page=None, to_page=None):
         # Wait for images to finish loading
         time.sleep(2)
 
-        # Hide fixed/sticky UI overlays (navbar, toolbar, ads) so they don't
-        # visually bleed into element screenshots.
+        # Hide fixed/sticky UI overlays (navbar, reader toolbar, ads) so they
+        # don't visually bleed into element screenshots. Scribd's JS re-shows
+        # these overlays (e.g. the Download/Find toolbar) as the page scrolls,
+        # so a one-shot hide isn't enough: we install a stylesheet rule with
+        # !important (which beats Scribd's inline styles) and re-tag overlays
+        # before every screenshot via hide_overlays().
         page.add_style_tag(content="""
-            *[style*='position: fixed'], *[style*='position:fixed'],
-            *[style*='position: sticky'], *[style*='position:sticky'] {
-                visibility: hidden !important;
-            }
+            [data-scribd-hide="1"] { visibility: hidden !important; }
         """)
-        page.evaluate("""
-            () => {
-                document.querySelectorAll('*').forEach(el => {
-                    const pos = window.getComputedStyle(el).position;
-                    if (pos === 'fixed' || pos === 'sticky') {
-                        el.style.visibility = 'hidden';
-                    }
-                });
-            }
-        """)
+
+        def hide_overlays():
+            page.evaluate("""
+                () => {
+                    document.querySelectorAll('*').forEach(el => {
+                        const pos = window.getComputedStyle(el).position;
+                        if (pos === 'fixed' || pos === 'sticky') {
+                            el.setAttribute('data-scribd-hide', '1');
+                        }
+                    });
+                }
+            """)
+
+        hide_overlays()
 
         # Screenshot each page
         newpages = page.query_selector_all(".newpage")
@@ -265,6 +270,10 @@ def screenshot_pages(url, title, from_page=None, to_page=None):
                 print(f"Skipped page {i}/{len(newpages)} (not visible)")
                 continue
             time.sleep(0.3)
+
+            # Re-hide overlays at the current scroll position: Scribd re-shows
+            # its reader toolbar after scrolling, so this must run per page.
+            hide_overlays()
 
             try:
                 # Use pg.screenshot() directly — it captures the exact element bounding
