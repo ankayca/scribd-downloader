@@ -227,13 +227,41 @@ def screenshot_pages(url, title, from_page=None, to_page=None):
         time.sleep(2)
 
         # Hide fixed/sticky UI overlays (navbar, reader toolbar, ads) so they
-        # don't visually bleed into element screenshots. Scribd's JS re-shows
-        # these overlays (e.g. the Download/Find toolbar) as the page scrolls,
-        # so a one-shot hide isn't enough: we install a stylesheet rule with
-        # !important (which beats Scribd's inline styles) and re-tag overlays
-        # before every screenshot via hide_overlays().
-        page.add_style_tag(content="""
-            [data-scribd-hide="1"] { visibility: hidden !important; }
+        # don't visually bleed into element screenshots.
+        #
+        # Scribd is a React app: when pg.screenshot() re-scrolls an element into
+        # view it re-renders the sticky reader toolbar (it updates the "page X /
+        # N" indicator), producing a fresh DOM node without our hide marker — so
+        # a one-shot hide leaves the toolbar on whatever page is in view at
+        # capture time. We instead install a MutationObserver that re-tags every
+        # fixed/sticky element on any DOM change (observer callbacks run before
+        # paint, so the re-rendered toolbar is hidden before the screenshot
+        # frame), plus a stylesheet rule with !important that beats Scribd's own
+        # styles.
+        page.evaluate("""
+            () => {
+                const style = document.createElement('style');
+                style.textContent = '[data-scribd-hide="1"] { visibility: hidden !important; }';
+                document.head.appendChild(style);
+
+                const mark = () => {
+                    document.querySelectorAll('*').forEach(el => {
+                        const pos = window.getComputedStyle(el).position;
+                        if (pos === 'fixed' || pos === 'sticky') {
+                            el.setAttribute('data-scribd-hide', '1');
+                        }
+                    });
+                };
+                mark();
+
+                const observer = new MutationObserver(() => mark());
+                observer.observe(document.documentElement, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                    attributeFilter: ['style', 'class'],
+                });
+            }
         """)
 
         def hide_overlays():
@@ -247,8 +275,6 @@ def screenshot_pages(url, title, from_page=None, to_page=None):
                     });
                 }
             """)
-
-        hide_overlays()
 
         # Screenshot each page
         newpages = page.query_selector_all(".newpage")
